@@ -5,7 +5,7 @@ from openai import OpenAI
 import os
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 
 # Configure logging
@@ -14,6 +14,9 @@ logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
+
+# Session configuration
+SESSION_TIMEOUT_MINUTES = 30
 
 # Initialize clients
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -31,7 +34,7 @@ def get_or_create_session(user_id: str) -> str:
     try:
         # Check for active session
         response = supabase.table("sessions") \
-            .select("session_id") \
+            .select("session_id, last_active") \
             .eq("user_id", user_id) \
             .eq("is_active", True) \
             .order("created_at", desc=True) \
@@ -39,15 +42,29 @@ def get_or_create_session(user_id: str) -> str:
             .execute()
         
         if response.data:
-            return response.data[0]["session_id"]
+            session = response.data[0]
+            # Ensure last_active is timezone-aware
+            last_active = datetime.fromisoformat(session["last_active"].replace('Z', '+00:00'))
+            current_time = datetime.now(timezone.utc)
+            
+            # Check if session has expired
+            if (current_time - last_active).total_seconds() > SESSION_TIMEOUT_MINUTES * 60:
+                # Mark old session as inactive
+                supabase.table("sessions") \
+                    .update({"is_active": False}) \
+                    .eq("session_id", session["session_id"]) \
+                    .execute()
+            else:
+                return session["session_id"]
         
         # Create new session
         session_id = str(uuid.uuid4())
+        current_time = datetime.now(timezone.utc).isoformat()
         supabase.table("sessions").insert({
             "user_id": user_id,
             "session_id": session_id,
-            "created_at": datetime.utcnow().isoformat(),
-            "last_active": datetime.utcnow().isoformat(),
+            "created_at": current_time,
+            "last_active": current_time,
             "is_active": True
         }).execute()
         
@@ -64,8 +81,9 @@ async def chat(request: PromptRequest):
         session_id = get_or_create_session(request.user_id)
         
         # Update session last active time
+        current_time = datetime.now(timezone.utc).isoformat()
         supabase.table("sessions") \
-            .update({"last_active": datetime.utcnow().isoformat()}) \
+            .update({"last_active": current_time}) \
             .eq("session_id", session_id) \
             .execute()
 
@@ -102,10 +120,15 @@ async def chat(request: PromptRequest):
             "user_id": request.user_id,
             "session_id": session_id,
             "prompt": request.prompt,
-            "response": reply
+            "response": reply,
+            "created_at": current_time
         }).execute()
 
-        return {"response": reply}
+        return {
+            "response": reply,
+            "session_id": session_id,
+            "timestamp": current_time
+        }
     except Exception as e:
         logger.error(f"Error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
