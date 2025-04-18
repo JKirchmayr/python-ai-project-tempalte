@@ -20,11 +20,9 @@ wheels/
 .installed.cfg
 *.egg
 
-# Environment
-.env
-.venv
-env/
+# Virtual Environment
 venv/
+env/
 ENV/
 
 # IDE
@@ -33,8 +31,16 @@ ENV/
 *.swp
 *.swo
 
+# Environment variables
+.env
+.env.local
+
 # Logs
 *.log
+
+# OS
+.DS_Store
+Thumbs.db
 
 # Local development
 .DS_Store
